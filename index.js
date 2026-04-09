@@ -28,6 +28,26 @@ const CRITICAL_WORDS = [
 const IMPORTANT_WORDS = ['btc', 'eth', 'bitcoin', 'listing', 'partnership', 'investment', 'inflation', 'bull', 'bear', 'whale', 'halkarz', 'temettü', 'kap'];
 const NOISE_WORDS = ['hisse', 'hisseleri', 'yükseldi', 'düştü', 'bilanço', 'rebound', 'açıkladı', 'beklenti', 'endeks', 'gün içi', 'düşüşle kapat', 'artışla kapat'];
 
+// --- ÇEVİRİ KORUMA VE SÖZLÜK ---
+const PROTECTED_WORDS = [
+  'Circle', 'Bullish', 'Binance', 'Fed', 'SEC', 'ETF', 'CPI', 'FOMC', 'CoinDesk', 'CNBC', 'CryptoPanic', 
+  'Bitcoin', 'Ethereum', 'BTC', 'ETH', 'SOL', 'XRP', 'Kraken', 'Coinbase', 'MicroStrategy'
+];
+
+const FINANCE_GLOSSARY = {
+  'not düşüşü': 'not indirimi',
+  'not düşüşlerinin': 'not indirimlerinin',
+  'not artışı': 'not artırımı',
+  'faiz artışı': 'faiz artırımı',
+  'faiz düşüşü': 'faiz indirimi',
+  'oran artışı': 'faiz artırımı',
+  'oran indirimi': 'faiz indirimi',
+  'ayı piyasası': 'düşüş trendi',
+  'boğa piyasası': 'yükseliş trendi',
+  'likidasyon': 'tasfiye',
+  'volatilite': 'fiyat oynaklığı'
+};
+
 function calculateImportance(title, votes = {}) {
   let score = 0;
   const lowerTitle = title.toLowerCase();
@@ -76,8 +96,35 @@ function saveState(state) {
 // --- ÇEVİRİ MOTORU ---
 async function translateText(text) {
   try {
-    const res = await translate.translate(text, { to: 'tr' });
-    return res.text;
+    let processedText = text;
+    const placeholders = [];
+
+    // 1. ÖZEL KELİMELERİ KORUMAYA AL (Placeholder ile)
+    PROTECTED_WORDS.forEach((word, index) => {
+      const regex = new RegExp(`\\b${word}\\b`, 'gi');
+      processedText = processedText.replace(regex, (match) => {
+        const placeholder = `[[P${index}]]`;
+        placeholders.push({ placeholder, original: match });
+        return placeholder;
+      });
+    });
+
+    // 2. ÇEVİRİ YAP
+    let res = await translate.translate(processedText, { to: 'tr' });
+    let translatedText = res.text;
+
+    // 3. KORUNAN KELİMELERİ GERİ YERLEŞTİR
+    placeholders.forEach(item => {
+      translatedText = translatedText.replace(item.placeholder, item.original);
+    });
+
+    // 4. FİNANSAL SÖZLÜK DÜZELTMELERİ (Post-Process)
+    Object.keys(FINANCE_GLOSSARY).forEach(key => {
+      const regex = new RegExp(key, 'gi');
+      translatedText = translatedText.replace(regex, FINANCE_GLOSSARY[key]);
+    });
+
+    return translatedText;
   } catch (e) {
     console.error('Çeviri hatası:', e.message);
     return text; // Hata durumunda orijinali döndür
