@@ -53,18 +53,31 @@ async function translateText(text) {
 // --- HABER ÇEKME VE PAYLAŞMA ---
 async function processNews() {
   const state = loadState();
+  const isFirstRun = state.posted_ids.length === 0; // İlk kez mi çalışıyor?
   console.log(`[${new Date().toLocaleTimeString()}] Haber taraması başlatıldı...`);
 
-  // 1. KRİPTO HABERLERİ (CryptoPanic)
+  // 1. KRİPTO HABERLERİ
   try {
     const cryptoUrl = CRYPTOPANIC_API_KEY 
       ? `https://cryptopanic.com/api/v1/posts/?auth_token=${CRYPTOPANIC_API_KEY}&public=true`
       : `https://cryptopanic.com/api/v1/posts/?public=true`;
     
     const res = await axios.get(cryptoUrl);
-    const newsItems = res.data.results || [];
+    let newsItems = res.data.results || [];
 
+    // İlk açılışta sadece en son 3 haberi al, diğerlerini hafızaya at
+    if (isFirstRun && newsItems.length > 3) {
+      console.log("[BİLGİ] İlk açılış: Eski haberler atlanıyor, sadece son 3'ü alınacak.");
+      const toStore = newsItems.slice(3);
+      toStore.forEach(item => state.posted_ids.push(item.id.toString()));
+      newsItems = newsItems.slice(0, 3);
+      saveState(state);
+    }
+
+    // Her döngüde en fazla 3 haber paylaş (Kanalı boğmamak için)
+    let postCount = 0;
     for (const item of newsItems) {
+      if (postCount >= 3) break;
       if (!state.posted_ids.includes(item.id.toString())) {
         console.log(`[YENİ KRİPTO] ${item.title}`);
         
@@ -80,12 +93,13 @@ async function processNews() {
         await bot.telegram.sendMessage(CHANNEL_ID, message, { 
           parse_mode: 'HTML',
           ...keyboard
-        });
+        }).catch(e => console.error("Kripto mesaj atılamadı:", e.message));
 
         state.posted_ids.push(item.id.toString());
         saveState(state);
-        // Hız sınırı ve çeviri kotası için kısa bekleme
-        await new Promise(r => setTimeout(r, 2000));
+        postCount++;
+        // Haberler arası 30 saniye bekle
+        await new Promise(r => setTimeout(r, 30000));
       }
     }
   } catch (e) {
@@ -95,12 +109,23 @@ async function processNews() {
   // 2. FİNANS VE BORSA HABERLERİ (Investing.com RSS)
   try {
     const financeFeed = await parser.parseURL('https://tr.investing.com/rss/news_25.rss');
-    for (const item of financeFeed.items) {
+    let financeItems = financeFeed.items;
+
+    // İlk açılışta sadece en son 3 haberi al
+    if (isFirstRun && financeItems.length > 3) {
+      const toStore = financeItems.slice(3);
+      toStore.forEach(item => state.posted_ids.push(item.guid || item.link));
+      financeItems = financeItems.slice(0, 3);
+      saveState(state);
+    }
+
+    let postCount = 0;
+    for (const item of financeItems) {
+      if (postCount >= 3) break;
       const newsId = item.guid || item.link;
       if (!state.posted_ids.includes(newsId)) {
         console.log(`[YENİ FİNANS] ${item.title}`);
         
-        // Zaten Türkçe olan kaynakları çevirme
         const isAlreadyTR = financeFeed.title.includes('Investing.com Türkiye');
         const translatedTitle = isAlreadyTR ? item.title : await translateText(item.title);
         
@@ -115,11 +140,13 @@ async function processNews() {
         await bot.telegram.sendMessage(CHANNEL_ID, message, { 
           parse_mode: 'HTML',
           ...keyboard
-        });
+        }).catch(e => console.error("Finans mesaj atılamadı:", e.message));
 
         state.posted_ids.push(newsId);
         saveState(state);
-        await new Promise(r => setTimeout(r, 2000));
+        postCount++;
+        // Haberler arası 30 saniye bekle
+        await new Promise(r => setTimeout(r, 30000));
       }
     }
   } catch (e) {
@@ -134,8 +161,8 @@ bot.telegram.getMe().then((me) => {
   // İlk çalıştırma
   processNews();
   
-  // Her 3 dakikada bir tarama yap (Gecikmeyi önlemek için makul süre)
-  setInterval(processNews, 3 * 60 * 1000);
+  // Her 10 dakikada bir tarama yap (Kanalı dinlendirmek için)
+  setInterval(processNews, 10 * 60 * 1000);
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
