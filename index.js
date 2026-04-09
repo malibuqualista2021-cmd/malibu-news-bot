@@ -15,6 +15,28 @@ const STATE_FILE = './news_state.json';
 const bot = new Telegraf(BOT_TOKEN);
 const parser = new RSSParser();
 
+// --- ÖNEM SIRALAMA AYARLARI ---
+const CRITICAL_WORDS = ['fed', 'etf', 'sec', 'faiz', 'cpi', 'tüfe', 'fomc', 'powell', 'breaking', 'kritik', 'urgent', 'binance', 'coinbase', 'ripple', 'xrp', 'lawsuit', 'enflasyon'];
+const IMPORTANT_WORDS = ['btc', 'eth', 'bitcoin', 'listing', 'partnership', 'investment', 'inflation', 'bull', 'bear', 'whale', 'halkarz', 'temettü'];
+
+function calculateImportance(title, votes = {}) {
+  let score = 0;
+  const lowerTitle = title.toLowerCase();
+  
+  // Anahtar kelime kontrolü
+  CRITICAL_WORDS.forEach(w => { if (lowerTitle.includes(w)) score += 100; });
+  IMPORTANT_WORDS.forEach(w => { if (lowerTitle.includes(w)) score += 40; });
+  
+  // CryptoPanic oyları / Sosyal Etki (varsa)
+  if (votes) {
+    score += (votes.positive || 0) * 5;
+    score += (votes.liked || 0) * 3;
+    score -= (votes.negative || 0) * 2;
+  }
+  
+  return score;
+}
+
 // --- HAFIZA YÖNETİMİ ---
 function loadState() {
   try {
@@ -53,8 +75,10 @@ async function translateText(text) {
 // --- HABER ÇEKME VE PAYLAŞMA ---
 async function processNews() {
   const state = loadState();
-  const isFirstRun = state.posted_ids.length === 0; // İlk kez mi çalışıyor?
+  const isFirstRun = state.posted_ids.length === 0;
   console.log(`[${new Date().toLocaleTimeString()}] Haber taraması başlatıldı...`);
+
+  let allNewNews = [];
 
   // 1. KRİPTO HABERLERİ
   try {
@@ -63,94 +87,94 @@ async function processNews() {
       : `https://cryptopanic.com/api/v1/posts/?public=true`;
     
     const res = await axios.get(cryptoUrl);
-    let newsItems = res.data.results || [];
+    const newsItems = res.data.results || [];
 
-    // İlk açılışta sadece en son 3 haberi al, diğerlerini hafızaya at
-    if (isFirstRun && newsItems.length > 3) {
-      console.log("[BİLGİ] İlk açılış: Eski haberler atlanıyor, sadece son 3'ü alınacak.");
-      const toStore = newsItems.slice(3);
-      toStore.forEach(item => state.posted_ids.push(item.id.toString()));
-      newsItems = newsItems.slice(0, 3);
-      saveState(state);
-    }
-
-    // Her döngüde en fazla 3 haber paylaş (Kanalı boğmamak için)
-    let postCount = 0;
     for (const item of newsItems) {
-      if (postCount >= 3) break;
       if (!state.posted_ids.includes(item.id.toString())) {
-        console.log(`[YENİ KRİPTO] ${item.title}`);
-        
-        const translatedTitle = await translateText(item.title);
-        const message = `🚀 <b>KRİPTO HABER</b>\n\n` +
-                        `🔹 <b>${translatedTitle}</b>\n\n` +
-                        `🏢 <i>Kaynak: ${item.source.title}</i>`;
-        
-        const keyboard = Markup.inlineKeyboard([
-          [Markup.button.url('📖 Haberi Oku', item.url)]
-        ]);
-
-        await bot.telegram.sendMessage(CHANNEL_ID, message, { 
-          parse_mode: 'HTML',
-          ...keyboard
-        }).catch(e => console.error("Kripto mesaj atılamadı:", e.message));
-
-        state.posted_ids.push(item.id.toString());
-        saveState(state);
-        postCount++;
-        // Haberler arası 30 saniye bekle
-        await new Promise(r => setTimeout(r, 30000));
+        allNewNews.push({
+          id: item.id.toString(),
+          title: item.title,
+          url: item.url,
+          source: item.source.title,
+          type: 'KRİPTO',
+          score: calculateImportance(item.title, item.votes)
+        });
       }
     }
-  } catch (e) {
-    console.error('Kripto haber çekme hatası:', e.message);
-  }
+  } catch (e) { console.error('Kripto haber çekme hatası:', e.message); }
 
-  // 2. FİNANS VE BORSA HABERLERİ (Investing.com RSS)
+  // 2. FİNANS VE BORSA HABERLERİ
   try {
     const financeFeed = await parser.parseURL('https://tr.investing.com/rss/news_25.rss');
-    let financeItems = financeFeed.items;
-
-    // İlk açılışta sadece en son 3 haberi al
-    if (isFirstRun && financeItems.length > 3) {
-      const toStore = financeItems.slice(3);
-      toStore.forEach(item => state.posted_ids.push(item.guid || item.link));
-      financeItems = financeItems.slice(0, 3);
-      saveState(state);
-    }
-
-    let postCount = 0;
-    for (const item of financeItems) {
-      if (postCount >= 3) break;
+    for (const item of financeFeed.items) {
       const newsId = item.guid || item.link;
       if (!state.posted_ids.includes(newsId)) {
-        console.log(`[YENİ FİNANS] ${item.title}`);
-        
-        const isAlreadyTR = financeFeed.title.includes('Investing.com Türkiye');
-        const translatedTitle = isAlreadyTR ? item.title : await translateText(item.title);
-        
-        const message = `📈 <b>GLOBAL FİNANS</b>\n\n` +
-                        `🔹 <b>${translatedTitle}</b>\n\n` +
-                        `📑 ${item.contentSnippet || ''}`;
-        
-        const keyboard = Markup.inlineKeyboard([
-          [Markup.button.url('🔗 Detayları Gör', item.link)]
-        ]);
-
-        await bot.telegram.sendMessage(CHANNEL_ID, message, { 
-          parse_mode: 'HTML',
-          ...keyboard
-        }).catch(e => console.error("Finans mesaj atılamadı:", e.message));
-
-        state.posted_ids.push(newsId);
-        saveState(state);
-        postCount++;
-        // Haberler arası 30 saniye bekle
-        await new Promise(r => setTimeout(r, 30000));
+        allNewNews.push({
+          id: newsId,
+          title: item.title,
+          url: item.link,
+          source: 'Investing.com',
+          type: 'FİNANS',
+          snippet: item.contentSnippet,
+          isAlreadyTR: financeFeed.title.includes('Investing.com Türkiye'),
+          score: calculateImportance(item.title)
+        });
       }
     }
-  } catch (e) {
-    console.error('Finans haber çekme hatası:', e.message);
+  } catch (e) { console.error('Finans haber çekme hatası:', e.message); }
+
+  // --- ÖNEM SIRASINA GÖRE SIRALA ---
+  allNewNews.sort((a, b) => b.score - a.score);
+
+  // İlk açılışta sadece en iyi 3 haberi gönder
+  if (isFirstRun) {
+    const skipped = allNewNews.slice(3);
+    skipped.forEach(n => state.posted_ids.push(n.id));
+    allNewNews = allNewNews.slice(0, 3);
+    saveState(state);
+  }
+
+  // Her döngüde en önemli 5 haberi paylaş
+  const toPost = allNewNews.slice(0, 5);
+  
+  // Geri kalanları "zaten görüldü" olarak işaretle (Kanalı boğmamak için)
+  const toSkip = allNewNews.slice(5);
+  toSkip.forEach(n => { state.posted_ids.push(n.id); });
+  saveState(state);
+
+  for (const item of toPost) {
+    try {
+      console.log(`[PAYLAŞILIYOR] Score: ${item.score} - ${item.title}`);
+      
+      const translatedTitle = item.isAlreadyTR ? item.title : await translateText(item.title);
+      
+      // Önem derecesine göre emoji/etiket seç
+      let prefix = item.type === 'KRİPTO' ? '🚀' : '📈';
+      if (item.score >= 100) prefix = '🔥 <b>KRİTİK</b>';
+      else if (item.score >= 40) prefix = '⭐ <b>ÖNEMLİ</b>';
+
+      const message = `${prefix} <b>${item.type} HABER</b>\n\n` +
+                      `🔹 <b>${translatedTitle}</b>\n\n` +
+                      (item.snippet ? `📑 ${item.snippet}\n\n` : '') +
+                      `🏢 <i>Kaynak: ${item.source}</i>`;
+      
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.url(item.type === 'KRİPTO' ? '📖 Haberi Oku' : '🔗 Detayları Gör', item.url)]
+      ]);
+
+      await bot.telegram.sendMessage(CHANNEL_ID, message, { 
+        parse_mode: 'HTML',
+        ...keyboard
+      });
+
+      state.posted_ids.push(item.id);
+      saveState(state);
+      
+      // Haberler arası bekleme (30 saniye)
+      await new Promise(r => setTimeout(r, 30000));
+    } catch (e) {
+      console.error('Mesaj atma hatası:', e.message);
+    }
   }
 }
 
