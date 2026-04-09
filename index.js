@@ -155,16 +155,10 @@ async function processNews() {
 
       const message = `${prefix} <b>${item.type} HABER</b>\n\n` +
                       `🔹 <b>${translatedTitle}</b>\n\n` +
-                      (item.snippet ? `📑 ${item.snippet}\n\n` : '') +
-                      `🏢 <i>Kaynak: ${item.source}</i>`;
+                      (item.snippet ? `📑 ${item.snippet}` : '');
       
-      const keyboard = Markup.inlineKeyboard([
-        [Markup.button.url(item.type === 'KRİPTO' ? '📖 Haberi Oku' : '🔗 Detayları Gör', item.url)]
-      ]);
-
       await bot.telegram.sendMessage(CHANNEL_ID, message, { 
-        parse_mode: 'HTML',
-        ...keyboard
+        parse_mode: 'HTML'
       });
 
       state.posted_ids.push(item.id);
