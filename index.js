@@ -161,14 +161,20 @@ async function processNews() {
       
       const translatedTitle = item.isAlreadyTR ? item.title : await translateText(item.title);
       
-      // Önem derecesine göre emoji/etiket seç
-      let prefix = item.type === 'KRİPTO' ? '🚀' : '📈';
-      if (item.score >= 100) prefix = '🔥 <b>KRİTİK</b>';
-      else if (item.score >= 40) prefix = '⭐ <b>ÖNEMLİ</b>';
+      // Önem derecesine göre rozet/etiket seç
+      let badge = item.type === 'KRİPTO' ? '🌐 <b>[ GLOBAL HABER ]</b>' : '📈 <b>[ FİNANS HABER ]</b>';
+      if (item.score >= 100) badge = '⚡️ <b>[ 🔴 KRİTİK GELİŞME ]</b> ⚡️';
+      else if (item.score >= 40) badge = '⭐ <b>[ 🟡 ÖNEMLİ HABER ]</b>';
 
-      const message = `${prefix} <b>${item.type} HABER</b>\n\n` +
-                      `🔹 <b>${translatedTitle}</b>\n\n` +
-                      (item.snippet ? `📑 ${item.snippet}` : '');
+      const timeStr = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+      const tag = item.type === 'KRİPTO' ? '#KRİPTO' : '#EKONOMİ';
+
+      const message = `${badge}\n` +
+                      `━━━━━━━━━━━━━━━━━━━━\n` +
+                      `🔹 <b>${translatedTitle.toUpperCase()}</b>\n\n` +
+                      (item.snippet ? `<blockquote>${item.snippet}</blockquote>\n\n` : '') +
+                      `🕙 <code>${timeStr} TRT</code> | <i>${tag}</i>\n` +
+                      `━━━━━━━━━━━━━━━━━━━━`;
       
       await bot.telegram.sendMessage(CHANNEL_ID, message, { 
         parse_mode: 'HTML'
