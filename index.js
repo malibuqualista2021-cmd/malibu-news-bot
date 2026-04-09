@@ -92,11 +92,11 @@ async function processNews() {
 
   let allNewNews = [];
 
-  // 1. KRİPTO HABERLERİ
+  // 1. KRİPTO HABERLERİ (CryptoPanic - Sadece Önemli ve Filtrelenmiş)
   try {
     const cryptoUrl = CRYPTOPANIC_API_KEY 
-      ? `https://cryptopanic.com/api/v1/posts/?auth_token=${CRYPTOPANIC_API_KEY}&public=true`
-      : `https://cryptopanic.com/api/v1/posts/?public=true`;
+      ? `https://cryptopanic.com/api/v1/posts/?auth_token=${CRYPTOPANIC_API_KEY}&public=true&filter=important`
+      : `https://cryptopanic.com/api/v1/posts/?public=true&filter=important`;
     
     const res = await axios.get(cryptoUrl);
     const newsItems = res.data.results || [];
@@ -109,31 +109,48 @@ async function processNews() {
           url: item.url,
           source: item.source.title,
           type: 'KRİPTO',
-          score: calculateImportance(item.title, item.votes)
+          score: calculateImportance(item.title, item.votes) + 20 // Profesyonel agregatör bonusu
         });
       }
     }
-  } catch (e) { console.error('Kripto haber çekme hatası:', e.message); }
+  } catch (e) { console.error('Kripto (Panic) hatası:', e.message); }
 
-  // 2. FİNANS VE BORSA HABERLERİ (Makro Ekonomi Odaklı)
+  // 1.1 KRİPTO HABERLERİ (CoinDesk - Altın Standart)
   try {
-    const financeFeed = await parser.parseURL('https://tr.investing.com/rss/news_285.rss');
-    for (const item of financeFeed.items) {
+    const cdFeed = await parser.parseURL('https://www.coindesk.com/arc/outboundfeeds/rss/');
+    for (const item of cdFeed.items) {
       const newsId = item.guid || item.link;
       if (!state.posted_ids.includes(newsId)) {
         allNewNews.push({
           id: newsId,
           title: item.title,
           url: item.link,
-          source: 'Investing.com',
-          type: 'FİNANS',
-          snippet: item.contentSnippet,
-          isAlreadyTR: financeFeed.title.includes('Investing.com Türkiye'),
-          score: calculateImportance(item.title)
+          source: 'CoinDesk',
+          type: 'KRİPTO',
+          score: calculateImportance(item.title) + 50 // En güvenilir kaynak bonusu
         });
       }
     }
-  } catch (e) { console.error('Finans haber çekme hatası:', e.message); }
+  } catch (e) { console.error('CoinDesk hatası:', e.message); }
+
+  // 2. FİNANS HABERLERİ (CNBC - Global Başlıklar)
+  try {
+    const cnbcFeed = await parser.parseURL('https://www.cnbc.com/id/100003114/device/rss/rss.html');
+    for (const item of cnbcFeed.items) {
+      const newsId = item.guid || item.link;
+      if (!state.posted_ids.includes(newsId)) {
+        allNewNews.push({
+          id: newsId,
+          title: item.title,
+          url: item.link,
+          source: 'CNBC',
+          type: 'FİNANS',
+          snippet: item.contentSnippet,
+          score: calculateImportance(item.title) + 40 // Elite finans bonusu
+        });
+      }
+    }
+  } catch (e) { console.error('CNBC hatası:', e.message); }
 
   // --- ÖNEM SIRASINA GÖRE SIRALA VE FİLTRELE ---
   allNewNews = allNewNews.filter(n => n.score >= MIN_SCORE_THRESHOLD); // Baraj altını ele
