@@ -16,8 +16,15 @@ const bot = new Telegraf(BOT_TOKEN);
 const parser = new RSSParser();
 
 // --- ÖNEM SIRALAMA AYARLARI ---
-const CRITICAL_WORDS = ['fed', 'etf', 'sec', 'faiz', 'cpi', 'tüfe', 'fomc', 'powell', 'breaking', 'kritik', 'urgent', 'binance', 'coinbase', 'ripple', 'xrp', 'lawsuit', 'enflasyon'];
-const IMPORTANT_WORDS = ['btc', 'eth', 'bitcoin', 'listing', 'partnership', 'investment', 'inflation', 'bull', 'bear', 'whale', 'halkarz', 'temettü'];
+const CRITICAL_WORDS = [
+  // Ekonomi & Finans
+  'fed', 'etf', 'sec', 'faiz', 'cpi', 'tüfe', 'fomc', 'powell', 'breaking', 'kritik', 'urgent', 'enflasyon',
+  // Savaş & Jeopolitik (Yüksek Öncelik)
+  'savaş', 'war', 'israil', 'israel', 'iran', 'filistin', 'palestine', 'rusya', 'russia', 'ukrayna', 'ukraine', 
+  'hizbullah', 'hezbollah', 'hamas', 'askeri', 'military', 'füze', 'missile', 'patlama', 'explosion', 
+  'saldırı', 'attack', 'vurdu', 'strike', 'operasyon', 'operation'
+];
+const IMPORTANT_WORDS = ['btc', 'eth', 'bitcoin', 'listing', 'partnership', 'investment', 'inflation', 'bull', 'bear', 'whale', 'halkarz', 'temettü', 'kap'];
 
 function calculateImportance(title, votes = {}) {
   let score = 0;
