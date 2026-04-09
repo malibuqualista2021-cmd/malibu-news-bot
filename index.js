@@ -16,15 +16,17 @@ const bot = new Telegraf(BOT_TOKEN);
 const parser = new RSSParser();
 
 // --- ÖNEM SIRALAMA AYARLARI ---
+const MIN_SCORE_THRESHOLD = 40; // Bu puanın altındaki haberler kanala atılmaz
 const CRITICAL_WORDS = [
   // Ekonomi & Finans
-  'fed', 'etf', 'sec', 'faiz', 'cpi', 'tüfe', 'fomc', 'powell', 'breaking', 'kritik', 'urgent', 'enflasyon',
+  'fed', 'etf', 'sec', 'faiz', 'cpi', 'tüfe', 'fomc', 'powell', 'breaking', 'kritik', 'urgent', 'enflasyon', 'merkez bankası', 'faiz oranı', 'tüketici fiyat', 'işsizlik',
   // Savaş & Jeopolitik (Yüksek Öncelik)
   'savaş', 'war', 'israil', 'israel', 'iran', 'filistin', 'palestine', 'rusya', 'russia', 'ukrayna', 'ukraine', 
   'hizbullah', 'hezbollah', 'hamas', 'askeri', 'military', 'füze', 'missile', 'patlama', 'explosion', 
   'saldırı', 'attack', 'vurdu', 'strike', 'operasyon', 'operation'
 ];
 const IMPORTANT_WORDS = ['btc', 'eth', 'bitcoin', 'listing', 'partnership', 'investment', 'inflation', 'bull', 'bear', 'whale', 'halkarz', 'temettü', 'kap'];
+const NOISE_WORDS = ['hisse', 'hisseleri', 'yükseldi', 'düştü', 'bilanço', 'rebound', 'açıkladı', 'beklenti', 'endeks', 'gün içi', 'düşüşle kapat', 'artışla kapat'];
 
 function calculateImportance(title, votes = {}) {
   let score = 0;
@@ -33,6 +35,9 @@ function calculateImportance(title, votes = {}) {
   // Anahtar kelime kontrolü
   CRITICAL_WORDS.forEach(w => { if (lowerTitle.includes(w)) score += 100; });
   IMPORTANT_WORDS.forEach(w => { if (lowerTitle.includes(w)) score += 40; });
+  
+  // Gürültü/Değersiz haber cezası
+  NOISE_WORDS.forEach(w => { if (lowerTitle.includes(w)) score -= 60; });
   
   // CryptoPanic oyları / Sosyal Etki (varsa)
   if (votes) {
@@ -110,9 +115,9 @@ async function processNews() {
     }
   } catch (e) { console.error('Kripto haber çekme hatası:', e.message); }
 
-  // 2. FİNANS VE BORSA HABERLERİ
+  // 2. FİNANS VE BORSA HABERLERİ (Makro Ekonomi Odaklı)
   try {
-    const financeFeed = await parser.parseURL('https://tr.investing.com/rss/news_25.rss');
+    const financeFeed = await parser.parseURL('https://tr.investing.com/rss/news_285.rss');
     for (const item of financeFeed.items) {
       const newsId = item.guid || item.link;
       if (!state.posted_ids.includes(newsId)) {
@@ -130,7 +135,8 @@ async function processNews() {
     }
   } catch (e) { console.error('Finans haber çekme hatası:', e.message); }
 
-  // --- ÖNEM SIRASINA GÖRE SIRALA ---
+  // --- ÖNEM SIRASINA GÖRE SIRALA VE FİLTRELE ---
+  allNewNews = allNewNews.filter(n => n.score >= MIN_SCORE_THRESHOLD); // Baraj altını ele
   allNewNews.sort((a, b) => b.score - a.score);
 
   // İlk açılışta sadece en iyi 3 haberi gönder
