@@ -1,0 +1,17 @@
+{
+  "name": "telegram-news-bot-tr",
+  "version": "1.0.0",
+  "description": "Global finance and crypto news bot with TR translation",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "axios": "^1.6.7",
+    "rss-parser": "^3.13.0",
+    "dotenv": "^16.4.5",
+    "@vitalets/google-translate-api": "^9.2.0"
+  }
+}
