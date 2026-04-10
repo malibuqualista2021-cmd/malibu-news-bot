@@ -16,7 +16,7 @@ const bot = new Telegraf(BOT_TOKEN);
 const parser = new RSSParser();
 
 // --- ÖNEM SIRALAMA AYARLARI ---
-const MIN_SCORE_THRESHOLD = 40; // Bu puanın altındaki haberler kanala atılmaz
+const MIN_SCORE_THRESHOLD = 100; // Sadece gerçekten kritik haberler geçer
 const CRITICAL_WORDS = [
   // Ekonomi & Finans
   'fed', 'etf', 'sec', 'faiz', 'cpi', 'tüfe', 'fomc', 'powell', 'breaking', 'kritik', 'urgent', 'enflasyon', 'merkez bankası', 'faiz oranı', 'tüketici fiyat', 'işsizlik',
@@ -25,8 +25,26 @@ const CRITICAL_WORDS = [
   'hizbullah', 'hezbollah', 'hamas', 'askeri', 'military', 'füze', 'missile', 'patlama', 'explosion', 
   'saldırı', 'attack', 'vurdu', 'strike', 'operasyon', 'operation'
 ];
-const IMPORTANT_WORDS = ['btc', 'eth', 'bitcoin', 'listing', 'partnership', 'investment', 'inflation', 'bull', 'bear', 'whale', 'halkarz', 'temettü', 'kap'];
-const NOISE_WORDS = ['hisse', 'hisseleri', 'yükseldi', 'düştü', 'bilanço', 'rebound', 'açıkladı', 'beklenti', 'endeks', 'gün içi', 'düşüşle kapat', 'artışla kapat'];
+const IMPORTANT_WORDS = ['btc', 'eth', 'bitcoin', 'inflation', 'whale', 'halkarz', 'temettü', 'kap', 'tariff', 'gümrük', 'yaptırım', 'sanctions', 'default', 'recession', 'resesyon', 'crash', 'çöküş'];
+const NOISE_WORDS = [
+  // Genel borsa gürültüsü
+  'hisse', 'hisseleri', 'yükseldi', 'düştü', 'bilanço', 'rebound', 'açıkladı', 'beklenti', 'endeks',
+  'gün içi', 'düşüşle kapat', 'artışla kapat', 'shares', 'stock', 'stocks', 'rallied', 'rally',
+  'gains', 'surged', 'climbed', 'tumbled', 'slipped', 'edges', 'dips', 'rises', 'falls',
+  'quarterly', 'earnings', 'revenue', 'profit', 'upgraded', 'downgraded', 'analyst', 'analysts',
+  'forecast', 'outlook', 'guidance', 'beat expectations', 'missed expectations', 'report',
+  // Eğlence / Magazin / İlgisiz
+  'celebrity', 'ünlü', 'melania', 'kardashian', 'movie', 'film', 'tv show', 'netflix', 'spotify',  
+  'fashion', 'moda', 'restaurant', 'food', 'recipe', 'diet', 'health', 'wellness', 'fitness',
+  'sports', 'spor', 'nba', 'nfl', 'soccer', 'football', 'tennis', 'golf', 'olympic',
+  'lifestyle', 'travel', 'tourism', 'hotel', 'vacation', 'holiday',
+  // Düşük değerli iş haberleri
+  'partnership', 'listing', 'ceo says', 'announces', 'launches', 'unveils', 'plans to',
+  'fast food', 'retail', 'retailer', 'supermarket', 'franchise', 'chain', 'store', 'stores',
+  'autonomous', 'self-driving', 'ev charger', 'charging station',
+  // Cramer ve düşük değerli yorumcular
+  'cramer', 'jim cramer', 'mad money', 'why you should', 'top picks', 'buy the dip'
+];
 
 // --- ÇEVİRİ KORUMA VE SÖZLÜK ---
 const PROTECTED_WORDS = [
@@ -54,10 +72,10 @@ function calculateImportance(title, votes = {}) {
   
   // Anahtar kelime kontrolü
   CRITICAL_WORDS.forEach(w => { if (lowerTitle.includes(w)) score += 100; });
-  IMPORTANT_WORDS.forEach(w => { if (lowerTitle.includes(w)) score += 40; });
+  IMPORTANT_WORDS.forEach(w => { if (lowerTitle.includes(w)) score += 50; });
   
   // Gürültü/Değersiz haber cezası
-  NOISE_WORDS.forEach(w => { if (lowerTitle.includes(w)) score -= 60; });
+  NOISE_WORDS.forEach(w => { if (lowerTitle.includes(w)) score -= 80; });
   
   // CryptoPanic oyları / Sosyal Etki (varsa)
   if (votes) {
@@ -156,7 +174,7 @@ async function processNews() {
           url: item.url,
           source: item.source.title,
           type: 'KRİPTO',
-          score: calculateImportance(item.title, item.votes) + 20 // Profesyonel agregatör bonusu
+          score: calculateImportance(item.title, item.votes) + 10 // Profesyonel agregatör bonusu
         });
       }
     }
@@ -174,7 +192,7 @@ async function processNews() {
           url: item.link,
           source: 'CoinDesk',
           type: 'KRİPTO',
-          score: calculateImportance(item.title) + 50 // En güvenilir kaynak bonusu
+          score: calculateImportance(item.title) + 15 // Kaynak bonusu (düşük tutuldu)
         });
       }
     }
@@ -193,7 +211,7 @@ async function processNews() {
           source: 'CNBC',
           type: 'FİNANS',
           snippet: item.contentSnippet,
-          score: calculateImportance(item.title) + 40 // Elite finans bonusu
+          score: calculateImportance(item.title) + 15 // Finans bonusu (düşük tutuldu)
         });
       }
     }
@@ -205,17 +223,17 @@ async function processNews() {
 
   // İlk açılışta sadece en iyi 3 haberi gönder
   if (isFirstRun) {
-    const skipped = allNewNews.slice(3);
+    const skipped = allNewNews.slice(2);
     skipped.forEach(n => state.posted_ids.push(n.id));
-    allNewNews = allNewNews.slice(0, 3);
+    allNewNews = allNewNews.slice(0, 2);
     saveState(state);
   }
 
-  // Her döngüde en önemli 5 haberi paylaş
-  const toPost = allNewNews.slice(0, 5);
+  // Her döngüde en önemli 2 haberi paylaş (kaliteyi yüksek tut)
+  const toPost = allNewNews.slice(0, 2);
   
   // Geri kalanları "zaten görüldü" olarak işaretle (Kanalı boğmamak için)
-  const toSkip = allNewNews.slice(5);
+  const toSkip = allNewNews.slice(2);
   toSkip.forEach(n => { state.posted_ids.push(n.id); });
   saveState(state);
 
@@ -227,8 +245,8 @@ async function processNews() {
       
       // Basit ve Sade Rozet Seçimi
       let badge = item.type === 'KRİPTO' ? '🔹 <b>GLOBAL HABER</b>' : '🔸 <b>FİNANS HABER</b>';
-      if (item.score >= 100) badge = '🔴 <b>KRİTİK GELİŞME</b>';
-      else if (item.score >= 40) badge = '🟡 <b>ÖNEMLİ HABER</b>';
+      if (item.score >= 150) badge = '🔴 <b>KRİTİK GELİŞME</b>';
+      else if (item.score >= 100) badge = '🟡 <b>ÖNEMLİ HABER</b>';
 
       const message = `${badge}\n\n` +
                       `<b>${translatedTitle}</b>\n\n` +
