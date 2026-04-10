@@ -352,7 +352,7 @@ async function fetchRSS(url, sourceName, type, state) {
 //  ANA MOTOR — HABER ÇEKME VE PAYLAŞMA
 // ═══════════════════════════════════════════════════════
 
-const MIN_SCORE = 100; // Minimum skor eşiği
+const MIN_SCORE = 150; // Sadece kritik haberler geçer
 
 async function processNews() {
   const state = loadState();
@@ -480,7 +480,7 @@ bot.telegram.getMe().then((me) => {
   console.log(`\n╔══════════════════════════════════════════╗`);
   console.log(`║  🚀 MALIBU NEWS BOT v2.0 BAŞLATILDI      ║`);
   console.log(`║  Bot: @${me.username.padEnd(33)}║`);
-  console.log(`║  Tarama: Her 2 dakikada bir              ║`);
+  console.log(`║  Tarama: Her 30 saniyede bir             ║`);
   console.log(`║  Kaynaklar: 8 paralel kaynak             ║`);
   console.log(`║  Filtre: Sadece kritik haberler           ║`);
   console.log(`╚══════════════════════════════════════════╝\n`);
@@ -488,8 +488,8 @@ bot.telegram.getMe().then((me) => {
   // İlk çalıştırma
   processNews();
 
-  // Her 2 dakikada bir tarama (120 saniye)
-  setInterval(processNews, 2 * 60 * 1000);
+  // Her 30 saniyede bir tarama (maksimum hız)
+  setInterval(processNews, 30 * 1000);
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
