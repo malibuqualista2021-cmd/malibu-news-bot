@@ -445,20 +445,16 @@ async function processNews() {
                 const translatedSnippet = await translateSnippet(item.snippet);
 
        // Rozet Secimi
-       let badge;
+                  let badge;
                   if (item.score >= 200) {
-                              badge = 'KRITIK GELISTME';
-       // Rozet Secimi
-                            let badge;
-                            if (item.score >= 200) {
-                                        badge = '<b>KRITIK GELISME</b>';
-                            } else if (item.score >= 150) {
-                                        badge = '<b>ONEMLI HABER</b>';
-                            } else {
-                                        badge = '<b>PIYASA HABERI</b>';
-                            }
-                      
-                      // Mesaj Formati
+                              badge = '<b>KRITIK GELISME</b>';
+                  } else if (item.score >= 150) {
+                              badge = '<b>ONEMLI HABER</b>';
+                  } else {
+                              badge = '<b>PIYASA HABERI</b>';
+                  }
+            
+            // Mesaj Formati
           const sourceLine = `<i>${item.source}</i>`;
                 let message = `${badge}\n\n` +
                                        `<b>${translatedTitle}</b>\n\n`;
