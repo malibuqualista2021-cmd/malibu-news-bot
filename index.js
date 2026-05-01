@@ -1010,6 +1010,9 @@ bot.telegram.getMe().then((me) => {
                             setInterval(processNews, 30 * 1000);
 
                             bot.launch();
+}).catch(() => {
+    logError('Telegram getMe basarisiz; BOT_TOKEN gecersiz veya ag hatasi olabilir (token loglanmaz).');
+    process.exit(1);
 });
 
 process.once('SIGINT', () => {
