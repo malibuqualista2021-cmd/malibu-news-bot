@@ -686,6 +686,133 @@ async function fetchRSS(url, sourceName, type, state) {
 
 const MIN_SCORE = 250; // Sadece gercekten kritik haberler gecer
 
+const IMPACT_LABEL_TR = { high: 'yüksek', medium: 'orta', low: 'düşük' };
+const BIAS_LABEL_TR = { bullish: 'pozitif', bearish: 'negatif', neutral: 'nötr' };
+const CATEGORY_LABEL_TR = {
+    macro: 'makro',
+    regulation: 'regülasyon',
+    crypto: 'kripto',
+    exchange: 'borsa',
+    security: 'güvenlik',
+    geopolitical: 'jeopolitik',
+    general: 'genel'
+};
+
+function analyzeNewsImpact(item) {
+    const title = (item.title || '').toLowerCase();
+    const snippet = (item.snippet || '').toLowerCase();
+    const text = `${title} ${snippet}`;
+    const score = item.score || 0;
+
+    const uncertaintyKw = [
+        'rumor', 'reportedly', ' allegedly', 'speculation', 'may ', ' could ', 'might ',
+        'soylenti', 'iddia', 'belirsiz', 'unconfirmed'
+    ];
+    let uncertaintyHits = 0;
+    uncertaintyKw.forEach((w) => {
+        if (text.includes(w)) uncertaintyHits += 1;
+    });
+
+    const bearishKw = [
+        'hack', 'exploit', 'breach', 'lawsuit', 'ban ', 'banned', 'investigation', 'fraud', 'bankruptcy',
+        'iflas', 'crash', 'flash crash', 'sanction', 'yaptirim', 'embargo', 'war ', 'invasion', 'nuclear',
+        'liquidat', 'selloff', 'default', 'rug pull', 'delist', 'halt', 'outage', 'withdraw freeze',
+        'etf reject', 'etf rejected',
+        'rate hike', 'hawkish', 'tightening', 'faiz art', 'inflation hot', 'inflation surge', 'stagflation',
+        'recession', 'black swan', 'circuit breaker'
+    ];
+    let bearishScore = 0;
+    bearishKw.forEach((w) => {
+        if (text.includes(w)) bearishScore += 2;
+    });
+
+    const bullishKw = [
+        'etf approval', 'etf approved', 'institutional', 'inflow', 'rate cut', 'easing', 'liquidity inject',
+        'stimulus', 'listing', 'partnership', 'upgrade', 'adoption', 'integration', 'milestone', 'breakthrough',
+        'record high', 'ath ', 'all-time high', 'bull run', 'accumulation'
+    ];
+    let bullishScore = 0;
+    bullishKw.forEach((w) => {
+        if (text.includes(w)) bullishScore += 2;
+    });
+    ['listing', 'partnership', 'upgrade'].forEach((w) => {
+        if (text.includes(w)) bullishScore += 1;
+    });
+
+    const categoryKeywords = {
+        regulation: ['sec ', 'regulation', 'regulator', 'lawsuit', 'cftc', 'court', 'compliance', 'ban crypto', 'yasak'],
+        security: ['hack', 'exploit', 'breach', 'phishing', 'malware', 'stolen', 'drain wallet', 'ransom'],
+        exchange: ['exchange', 'binance', 'coinbase', 'kraken', 'withdraw', 'deposit', 'trading halt', 'outage'],
+        geopolitical: ['sanction', 'nato', 'taiwan', 'ukraine', 'iran', 'israel', 'russia', 'china', 'war ', 'invasion'],
+        macro: ['fed', 'fomc', 'ecb', 'cpi', 'ppi', 'nfp', 'gdp', 'inflation', 'interest rate', 'yield', 'recession'],
+        crypto: ['bitcoin', 'btc', 'ethereum', 'eth', 'etf ', 'crypto', 'stablecoin', 'defi', 'altcoin', 'token']
+    };
+    let category = 'general';
+    let bestCatScore = 0;
+    Object.entries(categoryKeywords).forEach(([cat, kws]) => {
+        let c = 0;
+        kws.forEach((w) => {
+            if (text.includes(w)) c += 1;
+        });
+        if (c > bestCatScore) {
+            bestCatScore = c;
+            category = cat;
+        }
+    });
+
+    let marketBias = 'neutral';
+    if (bullishScore >= bearishScore + 3) marketBias = 'bullish';
+    else if (bearishScore >= bullishScore + 3) marketBias = 'bearish';
+
+    let impactLevel = 'medium';
+    if (score >= 360 || bearishScore >= 8 || (bearishScore >= 5 && (text.includes('hack') || text.includes('exploit')))) {
+        impactLevel = 'high';
+    } else if (score < 270 && bearishScore < 3 && bullishScore < 3) {
+        impactLevel = 'low';
+    }
+
+    let confidence = 70;
+    if (bullishScore + bearishScore >= 4) confidence += 12;
+    if (score >= 340) confidence += 10;
+    if (uncertaintyHits > 0) confidence -= 14 * Math.min(uncertaintyHits, 3);
+    if (marketBias !== 'neutral') confidence += 5;
+    confidence = Math.max(30, Math.min(95, Math.round(confidence)));
+
+    const riskParts = [];
+    if (text.includes('hack') || text.includes('exploit') || text.includes('breach')) {
+        riskParts.push('Güvenlik olayı volatiliteyi artırabilir.');
+    }
+    if (text.includes('lawsuit') || text.includes('investigation') || (text.includes('sec ') && text.includes('charg'))) {
+        riskParts.push('Regülasyon belirsizliği.');
+    }
+    if ((text.includes('war') || text.includes('sanction') || text.includes('yaptirim')) && marketBias === 'bearish') {
+        riskParts.push('Jeopolitik risk iştahını kesebilir.');
+    }
+    if ((text.includes('etf approval') || text.includes('etf approved')) && marketBias === 'bullish') {
+        riskParts.push('Kurumsal/kripto lehine sinyal.');
+    }
+    if ((text.includes('rate cut') || text.includes('easing')) && marketBias === 'bullish') {
+        riskParts.push('Gevşek para politikası risk varlıklarını destekleyebilir.');
+    }
+    if (uncertaintyHits > 0) {
+        riskParts.push('Belirsiz dil; güven düşük.');
+    }
+    let riskNote = riskParts.length ? riskParts.join(' ') : (
+        marketBias === 'bullish' ? 'Kısa vadede pozitif etki beklenebilir.' :
+            marketBias === 'bearish' ? 'Kısa vadede baskı riski.' :
+                'Sınırlı veya yönü belirsiz etki.'
+    );
+    riskNote = riskNote.replace(/\s+/g, ' ').trim().slice(0, 120);
+
+    return {
+        impactLevel,
+        marketBias,
+        riskNote,
+        category,
+        confidence
+    };
+}
+
 async function processNews() {
     const state = loadState();
     ensureStateShape(state);
@@ -791,13 +918,26 @@ async function processNews() {
             const safeTitle = escapeHtml(translatedTitle);
             const safeSource = escapeHtml(item.source);
 
+            const analysis = analyzeNewsImpact(item);
+            const safeImpact = escapeHtml(IMPACT_LABEL_TR[analysis.impactLevel] || analysis.impactLevel);
+            const safeBias = escapeHtml(BIAS_LABEL_TR[analysis.marketBias] || analysis.marketBias);
+            const safeCat = escapeHtml(CATEGORY_LABEL_TR[analysis.category] || analysis.category);
+            const safeConf = escapeHtml(String(analysis.confidence));
+            const safeRisk = escapeHtml(analysis.riskNote);
+
             let message = `${badge}\n\n<b>${safeTitle}</b>\n\n`;
 
           if (translatedSnippet) {
                     message += `Özet:\n${escapeHtml(translatedSnippet)}\n\n`;
           }
 
-          message += `Kaynak: ${safeSource}`;
+          message +=
+              `Etki: ${safeImpact}\n` +
+              `Yön: ${safeBias}\n` +
+              `Kategori: ${safeCat}\n` +
+              `Güven: ${safeConf}/100\n` +
+              `Risk: ${safeRisk}\n\n` +
+              `Kaynak: ${safeSource}`;
 
           if (isValidNewsUrl(item.url)) {
                     message += `\nLink: <a href="${escapeHtml(item.url.trim())}">Haberi aç</a>`;
