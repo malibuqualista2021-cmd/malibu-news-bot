@@ -282,25 +282,172 @@ async function translateSnippet(snippet) {
     return await translateText(short);
 }
 
+function escapeHtml(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function isValidNewsUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    const trimmed = url.trim();
+    if (trimmed === '') return false;
+    try {
+        const u = new URL(trimmed);
+        return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
+
+const TRACKING_QUERY_KEYS = new Set([
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+    'ref', 'fbclid', 'gclid'
+]);
+
+const MIN_TITLE_FINGERPRINT_LEN = 20;
+
+function normalizeUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    const trimmed = url.trim();
+    if (trimmed === '') return '';
+    try {
+        const u = new URL(trimmed);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+        TRACKING_QUERY_KEYS.forEach((k) => u.searchParams.delete(k));
+        let pathname = u.pathname;
+        if (pathname.length > 1 && pathname.endsWith('/')) {
+            pathname = pathname.replace(/\/+$/, '') || '/';
+            u.pathname = pathname;
+        }
+        return u.href;
+    } catch {
+        return '';
+    }
+}
+
+function normalizeTitle(title) {
+    if (!title || typeof title !== 'string') return '';
+    let s = title.toLowerCase();
+    s = s.replace(/[^a-z0-9ğüşöçıı\u0400-\u04FF\s]/gi, ' ');
+    s = s.replace(/\s+/g, ' ').trim();
+    return s;
+}
+
+function createNewsFingerprints(item) {
+    const out = [];
+    const nu = normalizeUrl(item.url || '');
+    if (nu) out.push(`url:${nu}`);
+    const nt = normalizeTitle(item.title || '');
+    if (nt.length >= MIN_TITLE_FINGERPRINT_LEN) out.push(`title:${nt}`);
+    return [...new Set(out)];
+}
+
+function fingerprintsOverlap(fpsA, fpsB) {
+    if (fpsA.length === 0 || fpsB.length === 0) return false;
+    const setB = new Set(fpsB);
+    for (const fp of fpsA) {
+        if (setB.has(fp)) return true;
+    }
+    return false;
+}
+
+function postedContainsAnyFingerprint(state, fps) {
+    for (const fp of fps) {
+        if (state.posted_fingerprints.includes(fp)) return true;
+    }
+    return false;
+}
+
+function registerFingerprint(state, fp) {
+    if (!fp) return;
+    if (state.posted_fingerprints.includes(fp)) return;
+    state.posted_fingerprints.push(fp);
+    if (state.posted_fingerprints.length > 1000) {
+        state.posted_fingerprints = state.posted_fingerprints.slice(-1000);
+    }
+}
+
+function persistFingerprintForItem(state, item, kind) {
+    const fps = createNewsFingerprints(item);
+    if (kind === 'rejected') {
+        for (const fp of fps) {
+            if (fp.startsWith('url:')) registerFingerprint(state, fp);
+        }
+        return;
+    }
+    for (const fp of fps) {
+        registerFingerprint(state, fp);
+    }
+}
+
+function dedupeNewsBatchByFingerprint(items) {
+    const n = items.length;
+    const fpsList = items.map((it) => createNewsFingerprints(it));
+    const parent = Array.from({ length: n }, (_, i) => i);
+    function find(i) {
+        if (parent[i] !== i) parent[i] = find(parent[i]);
+        return parent[i];
+    }
+    function union(i, j) {
+        const ri = find(i);
+        const rj = find(j);
+        if (ri !== rj) parent[ri] = rj;
+    }
+    for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+            if (fingerprintsOverlap(fpsList[i], fpsList[j])) union(i, j);
+        }
+    }
+    const bestInRoot = new Map();
+    for (let i = 0; i < n; i++) {
+        const root = find(i);
+        const it = items[i];
+        const prev = bestInRoot.get(root);
+        if (!prev || it.score > prev.score) bestInRoot.set(root, it);
+    }
+    const winners = new Set(bestInRoot.values());
+    for (let i = 0; i < n; i++) {
+        if (!winners.has(items[i])) {
+            const t = (items[i].title || '').substring(0, 80);
+            console.log(`Duplicate skipped: ${t}`);
+        }
+    }
+    return Array.from(bestInRoot.values());
+}
+
 // =======================================================
 //  HAFIZA YONETIMI
 // =======================================================
 
+function ensureStateShape(state) {
+    if (!Array.isArray(state.posted_ids)) state.posted_ids = [];
+    if (!Array.isArray(state.posted_fingerprints)) state.posted_fingerprints = [];
+}
+
 function loadState() {
     try {
           if (fs.existsSync(STATE_FILE)) {
-                  return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+                  const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+                  ensureStateShape(raw);
+                  return raw;
           }
     } catch (e) {
           console.error('Hafiza yuklenemedi:', e.message);
     }
-    return { posted_ids: [], last_check: '' };
+    return { posted_ids: [], last_check: '', posted_fingerprints: [] };
 }
 
 function saveState(state) {
     try {
           if (state.posted_ids.length > 500) {
                   state.posted_ids = state.posted_ids.slice(-500);
+          }
+          if (state.posted_fingerprints.length > 1000) {
+                  state.posted_fingerprints = state.posted_fingerprints.slice(-1000);
           }
           fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
     } catch (e) {
@@ -320,17 +467,23 @@ async function fetchCryptoPanic(state) {
                   : `https://cryptopanic.com/api/v1/posts/?public=true&filter=important`;
           const res = await axios.get(url, { timeout: 10000 });
           for (const item of (res.data.results || [])) {
-                  if (!state.posted_ids.includes(item.id.toString())) {
-                            items.push({
-                                        id: item.id.toString(),
-                                        title: item.title,
-                                        url: item.url,
-                                        source: item.source?.title || 'CryptoPanic',
-                                        type: 'KRIPTO',
-                                        snippet: '',
-                                        score: calculateImportance(item.title, '', item.votes)
-                            });
+                  if (state.posted_ids.includes(item.id.toString())) continue;
+                  const cand = {
+                            id: item.id.toString(),
+                            title: item.title,
+                            url: item.url,
+                            source: item.source?.title || 'CryptoPanic',
+                            type: 'KRIPTO',
+                            snippet: '',
+                            score: calculateImportance(item.title, '', item.votes)
+                  };
+                  const fps = createNewsFingerprints(cand);
+                  if (postedContainsAnyFingerprint(state, fps)) {
+                            const t = (item.title || '').substring(0, 80);
+                            console.log(`Duplicate skipped: ${t}`);
+                            continue;
                   }
+                  items.push(cand);
           }
     } catch (e) { console.error('[CryptoPanic] Hata:', e.message); }
     return items;
@@ -342,18 +495,24 @@ async function fetchRSS(url, sourceName, type, state) {
           const feed = await parser.parseURL(url);
           for (const item of (feed.items || [])) {
                   const newsId = item.guid || item.link || item.title;
-                  if (!state.posted_ids.includes(newsId)) {
-                            const snippet = item.contentSnippet || item.content || '';
-                            items.push({
-                                        id: newsId,
-                                        title: item.title,
-                                        url: item.link,
-                                        source: sourceName,
-                                        type: type,
-                                        snippet: snippet.substring(0, 300),
-                                        score: calculateImportance(item.title, snippet)
-                            });
+                  if (state.posted_ids.includes(newsId)) continue;
+                  const snippet = item.contentSnippet || item.content || '';
+                  const cand = {
+                            id: newsId,
+                            title: item.title,
+                            url: item.link,
+                            source: sourceName,
+                            type: type,
+                            snippet: snippet.substring(0, 300),
+                            score: calculateImportance(item.title, snippet)
+                  };
+                  const fps = createNewsFingerprints(cand);
+                  if (postedContainsAnyFingerprint(state, fps)) {
+                            const t = (item.title || '').substring(0, 80);
+                            console.log(`Duplicate skipped: ${t}`);
+                            continue;
                   }
+                  items.push(cand);
           }
     } catch (e) { console.error(`[${sourceName}] Hata:`, e.message); }
     return items;
@@ -367,6 +526,7 @@ const MIN_SCORE = 250; // Sadece gercekten kritik haberler gecer
 
 async function processNews() {
     const state = loadState();
+    ensureStateShape(state);
     const isFirstRun = state.posted_ids.length === 0;
     const now = new Date().toLocaleTimeString('tr-TR');
     console.log(`\n[${now}] ====== TARAMA BASLADI ======`);
@@ -404,6 +564,8 @@ async function processNews() {
           }
     });
 
+  allNews = dedupeNewsBatchByFingerprint(allNews);
+
   console.log(`  Toplam: ${allNews.length} yeni haber bulundu`);
 
   // SKOR FILTRESI
@@ -419,12 +581,18 @@ async function processNews() {
 
   // Elenen haberleri hafizaya ekle (tekrar taranmasin)
   const rejected = allNews.filter(n => n.score < MIN_SCORE);
-    rejected.forEach(n => state.posted_ids.push(n.id));
+    rejected.forEach((n) => {
+          state.posted_ids.push(n.id);
+          persistFingerprintForItem(state, n, 'rejected');
+    });
 
   // Ilk calistirmada sadece en iyi 2
   if (isFirstRun) {
         const skipped = qualified.slice(2);
-        skipped.forEach(n => state.posted_ids.push(n.id));
+        skipped.forEach((n) => {
+              state.posted_ids.push(n.id);
+              persistFingerprintForItem(state, n, 'skipped');
+        });
         qualified.splice(2);
         saveState(state);
   }
@@ -432,7 +600,10 @@ async function processNews() {
   // Her dongude en onemli 3 haberi paylas
   const toPost = qualified.slice(0, 3);
     const toSkip = qualified.slice(3);
-    toSkip.forEach(n => state.posted_ids.push(n.id));
+    toSkip.forEach((n) => {
+          state.posted_ids.push(n.id);
+          persistFingerprintForItem(state, n, 'skipped');
+    });
     saveState(state);
 
   for (const item of toPost) {
@@ -453,17 +624,21 @@ async function processNews() {
                   } else {
                               badge = '<b>PIYASA HABERI</b>';
                   }
-            
-            // Mesaj Formati
-          const sourceLine = `<i>${item.source}</i>`;
-                let message = `${badge}\n\n` +
-                                       `<b>${translatedTitle}</b>\n\n`;
+
+            const safeTitle = escapeHtml(translatedTitle);
+            const safeSource = escapeHtml(item.source);
+
+            let message = `${badge}\n\n<b>${safeTitle}</b>\n\n`;
 
           if (translatedSnippet) {
-                    message += `${translatedSnippet}\n\n`;
+                    message += `Özet:\n${escapeHtml(translatedSnippet)}\n\n`;
           }
 
-          message += sourceLine;
+          message += `Kaynak: ${safeSource}`;
+
+          if (isValidNewsUrl(item.url)) {
+                    message += `\nLink: <a href="${escapeHtml(item.url.trim())}">Haberi aç</a>`;
+          }
 
           await bot.telegram.sendMessage(CHANNEL_ID, message, {
                     parse_mode: 'HTML',
@@ -471,6 +646,7 @@ async function processNews() {
           });
 
           state.posted_ids.push(item.id);
+                persistFingerprintForItem(state, item, 'posted');
                 saveState(state);
 
           // Haberler arasi bekleme (5 saniye)
