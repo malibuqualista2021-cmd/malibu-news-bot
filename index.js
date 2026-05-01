@@ -446,6 +446,17 @@ function escapeHtml(text) {
         .replace(/"/g, '&quot;');
 }
 
+function trimText(text, maxLength) {
+    if (text == null || text === '') return '';
+    const s = String(text).trim();
+    const cap = Math.max(0, Number(maxLength) || 0);
+    if (cap === 0) return '';
+    if (s.length <= cap) return s;
+    const dots = cap >= 3 ? '...' : '';
+    const bodyLen = cap - dots.length;
+    return (bodyLen > 0 ? s.substring(0, bodyLen) : '') + dots;
+}
+
 function isValidNewsUrl(url) {
     if (!url || typeof url !== 'string') return false;
     const trimmed = url.trim();
@@ -688,16 +699,6 @@ const MIN_SCORE = 250; // Sadece gercekten kritik haberler gecer
 
 const IMPACT_LABEL_TR = { high: 'yüksek', medium: 'orta', low: 'düşük' };
 const BIAS_LABEL_TR = { bullish: 'pozitif', bearish: 'negatif', neutral: 'nötr' };
-const CATEGORY_LABEL_TR = {
-    macro: 'makro',
-    regulation: 'regülasyon',
-    crypto: 'kripto',
-    exchange: 'borsa',
-    security: 'güvenlik',
-    geopolitical: 'jeopolitik',
-    general: 'genel'
-};
-
 function analyzeNewsImpact(item) {
     const title = (item.title || '').toLowerCase();
     const snippet = (item.snippet || '').toLowerCase();
@@ -813,6 +814,63 @@ function analyzeNewsImpact(item) {
     };
 }
 
+function buildChannelHeaderLine(score, biasLabelEscaped) {
+    let emoji = '📊';
+    let label = 'PİYASA';
+    if (score >= 200) {
+        emoji = '🚨';
+        label = 'KRİTİK';
+    } else if (score >= 150) {
+        emoji = '📌';
+        label = 'ÖNEMLİ';
+    }
+    return `${emoji} ${label} | ${biasLabelEscaped}`;
+}
+
+function buildShortChannelMessage(translatedTitle, translatedSnippet, item, analysis) {
+    const safeBias = escapeHtml(BIAS_LABEL_TR[analysis.marketBias] || analysis.marketBias);
+    const headerLine = buildChannelHeaderLine(item.score, safeBias);
+
+    let maxTitle = 120;
+    let maxSum = 220;
+    let maxRisk = 60;
+
+    let lastMsg = '';
+    for (let iter = 0; iter < 24; iter++) {
+        const titleRaw = trimText((translatedTitle || '').trim(), maxTitle);
+        const safeTitle = escapeHtml(titleRaw);
+
+        let sumPart = '';
+        if (translatedSnippet && String(translatedSnippet).trim()) {
+            const oneLine = String(translatedSnippet).replace(/\s+/g, ' ').trim();
+            sumPart = escapeHtml(trimText(oneLine, maxSum));
+        }
+
+        const safeImpact = escapeHtml(IMPACT_LABEL_TR[analysis.impactLevel] || analysis.impactLevel);
+        const safeConf = escapeHtml(String(analysis.confidence));
+        const riskOne = (analysis.riskNote || '').replace(/\s+/g, ' ').trim();
+        const safeRisk = escapeHtml(trimText(riskOne, maxRisk));
+
+        const safeSource = escapeHtml(item.source || '');
+
+        let msg = `${headerLine}\n\n<b>${safeTitle}</b>`;
+        if (sumPart) msg += `\nÖzet: ${sumPart}`;
+        msg += `\nEtki: ${safeImpact} | Güven: ${safeConf}/100 | Risk: ${safeRisk}`;
+        if (isValidNewsUrl(item.url)) {
+            msg += `\nKaynak: ${safeSource} · <a href="${escapeHtml(item.url.trim())}">Haberi aç</a>`;
+        } else {
+            msg += `\nKaynak: ${safeSource}`;
+        }
+
+        lastMsg = msg;
+        if (msg.length <= 700 || (maxTitle <= 35 && maxSum <= 28 && maxRisk <= 12)) return msg;
+        maxSum = Math.max(28, maxSum - 35);
+        maxTitle = Math.max(35, maxTitle - 20);
+        maxRisk = Math.max(12, maxRisk - 8);
+    }
+    return lastMsg;
+}
+
 async function processNews() {
     const state = loadState();
     ensureStateShape(state);
@@ -905,43 +963,8 @@ async function processNews() {
           const translatedTitle = await translateText(item.title);
                 const translatedSnippet = await translateSnippet(item.snippet);
 
-       // Rozet Secimi
-                  let badge;
-                  if (item.score >= 200) {
-                              badge = '<b>KRITIK GELISME</b>';
-                  } else if (item.score >= 150) {
-                              badge = '<b>ONEMLI HABER</b>';
-                  } else {
-                              badge = '<b>PIYASA HABERI</b>';
-                  }
-
-            const safeTitle = escapeHtml(translatedTitle);
-            const safeSource = escapeHtml(item.source);
-
             const analysis = analyzeNewsImpact(item);
-            const safeImpact = escapeHtml(IMPACT_LABEL_TR[analysis.impactLevel] || analysis.impactLevel);
-            const safeBias = escapeHtml(BIAS_LABEL_TR[analysis.marketBias] || analysis.marketBias);
-            const safeCat = escapeHtml(CATEGORY_LABEL_TR[analysis.category] || analysis.category);
-            const safeConf = escapeHtml(String(analysis.confidence));
-            const safeRisk = escapeHtml(analysis.riskNote);
-
-            let message = `${badge}\n\n<b>${safeTitle}</b>\n\n`;
-
-          if (translatedSnippet) {
-                    message += `Özet:\n${escapeHtml(translatedSnippet)}\n\n`;
-          }
-
-          message +=
-              `Etki: ${safeImpact}\n` +
-              `Yön: ${safeBias}\n` +
-              `Kategori: ${safeCat}\n` +
-              `Güven: ${safeConf}/100\n` +
-              `Risk: ${safeRisk}\n\n` +
-              `Kaynak: ${safeSource}`;
-
-          if (isValidNewsUrl(item.url)) {
-                    message += `\nLink: <a href="${escapeHtml(item.url.trim())}">Haberi aç</a>`;
-          }
+            const message = buildShortChannelMessage(translatedTitle, translatedSnippet, item, analysis);
 
           await sendTelegramMessageWithRetry(() =>
             bot.telegram.sendMessage(CHANNEL_ID, message, {
