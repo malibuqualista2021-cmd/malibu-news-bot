@@ -484,20 +484,6 @@ async function processNews() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  MESAJ DİNLEME VE OTOMATİK 👍 REAKSİYONU
-// ═══════════════════════════════════════════════════════
-
-bot.on('message', async (ctx) => {
-  try {
-    // Her gelen mesaja (metin, fotoğraf, grafik vb.) 👍 reaksiyonu bırak
-    await ctx.react('👍');
-  } catch (e) {
-    // Reaksiyon özelliği her zaman çalışmayabilir (sohbet kapalıysa vb.)
-    console.error('  ❗ Reaksiyon hatası:', e.message);
-  }
-});
-
-// ═══════════════════════════════════════════════════════
 //  BAŞLATMA — 30 SANIYEDE BIR TARAMA
 // ═══════════════════════════════════════════════════════
 
@@ -516,9 +502,7 @@ bot.telegram.getMe().then((me) => {
                             // Her 30 saniyede bir tarama (maksimum hiz)
                             setInterval(processNews, 30 * 1000);
 
-                            // Mesaj dinlemeyi başlat
                             bot.launch();
-                            console.log(`|  Dinleme: AKTİF (👍 reaksiyonu açık)     |`);
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
