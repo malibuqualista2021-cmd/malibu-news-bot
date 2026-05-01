@@ -5,6 +5,72 @@ const translate = require('@vitalets/google-translate-api');
 const fs = require('fs');
 require('dotenv').config();
 
+const LOG_ORDER = { debug: 0, info: 1, warn: 2, error: 3 };
+
+function parseLogLevelNum() {
+    const name = (process.env.LOG_LEVEL || 'info').toLowerCase().trim();
+    if (LOG_ORDER[name] !== undefined) return LOG_ORDER[name];
+    return LOG_ORDER.info;
+}
+
+const logLevelNum = parseLogLevelNum();
+
+function logDebug(...args) {
+    if (logLevelNum <= LOG_ORDER.debug) console.log(...args);
+}
+
+function logInfo(...args) {
+    if (logLevelNum <= LOG_ORDER.info) console.log(...args);
+}
+
+function logWarn(...args) {
+    if (logLevelNum <= LOG_ORDER.warn) console.warn(...args);
+}
+
+function logError(...args) {
+    if (logLevelNum <= LOG_ORDER.error) console.error(...args);
+}
+
+const runtimeStats = {
+    isRunLoopActive: true,
+    lastScanIso: null,
+    lastScanTotalNews: 0,
+    lastScanQualified: 0,
+    lastScanSent: 0,
+    lastScanPostedIdsSize: 0,
+    lastScanFingerprintsSize: 0
+};
+
+function validateEnv() {
+    const botToken = process.env.BOT_TOKEN;
+    const channelId = process.env.CHANNEL_ID;
+    const cryptoKey = process.env.CRYPTOPANIC_API_KEY;
+    const adminId = process.env.ADMIN_ID;
+
+    if (botToken === undefined || botToken === null || String(botToken).trim() === '') {
+        logError('HATA: BOT_TOKEN zorunludur. .env dosyasinda tanimlayin (deger loglanmaz).');
+        process.exit(1);
+    }
+
+    if (channelId === undefined || channelId === null || String(channelId).trim() === '') {
+        logError('HATA: CHANNEL_ID zorunludur. .env dosyasinda tanimlayin (deger loglanmaz).');
+        process.exit(1);
+    }
+
+    if (cryptoKey === undefined || cryptoKey === null || String(cryptoKey).trim() === '') {
+        logWarn('UYARI: CryptoPanic API key yok, public endpoint kullanılacak.');
+    }
+
+    if (adminId !== undefined && adminId !== null && String(adminId).trim() !== '') {
+        const s = String(adminId).trim();
+        if (!/^-?\d{1,20}$/.test(s)) {
+            logWarn('UYARI: ADMIN_ID beklenen sayisal Telegram ID formatinda degil; simdilik yoksayiliyor.');
+        }
+    }
+}
+
+validateEnv();
+
 // =======================================================
 //  MALIBU NEWS BOT v2.1 - KRITIK HABER ODAKLI (REFINE)
 // =======================================================
@@ -14,6 +80,15 @@ const CHANNEL_ID = process.env.CHANNEL_ID;
 const ADMIN_ID = process.env.ADMIN_ID;
 const CRYPTOPANIC_API_KEY = process.env.CRYPTOPANIC_API_KEY;
 const STATE_FILE = './news_state.json';
+
+function parseAdminUserId() {
+    if (!ADMIN_ID || String(ADMIN_ID).trim() === '') return null;
+    const s = String(ADMIN_ID).trim();
+    if (!/^-?\d{1,20}$/.test(s)) return null;
+    return Number(s);
+}
+
+const ADMIN_USER_ID = parseAdminUserId();
 
 const bot = new Telegraf(BOT_TOKEN);
 const parser = new RSSParser();
@@ -245,7 +320,10 @@ async function translateText(text) {
       });
 
       // 2. CEVIRI YAP
-      let res = await translate.translate(processedText, { to: 'tr' });
+      let res = await retryWithBackoff(
+        () => translate.translate(processedText, { to: 'tr' }),
+        { maxRetries: 3, baseDelayMs: 500, isRetryable: () => true }
+      );
         let translatedText = res.text;
 
       // 3. KORUNAN KELIMELERI GERI YERLESTIR
@@ -269,7 +347,7 @@ async function translateText(text) {
 
       return translatedText.trim();
   } catch (e) {
-        console.error('Ceviri hatasi:', e.message);
+        logError('Ceviri hatasi:', e.message);
         return text;
   }
 }
@@ -280,6 +358,83 @@ async function translateSnippet(snippet) {
     // Snippet'i 200 karakterle sinirla (ceviri kalitesi icin)
   const short = snippet.length > 200 ? snippet.substring(0, 200) + '...' : snippet;
     return await translateText(short);
+}
+
+async function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableAxiosError(err) {
+    if (!err) return false;
+    if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.code === 'ECONNRESET') return true;
+    if (err.response) {
+        const s = err.response.status;
+        if (s === 408 || s === 429) return true;
+        if (s >= 500) return true;
+        return false;
+    }
+    return true;
+}
+
+function isRetryableRssFetchError(err) {
+    if (!err) return false;
+    const c = err.code || err.cause?.code;
+    if (c === 'ECONNRESET' || c === 'ETIMEDOUT' || c === 'ECONNREFUSED' || c === 'ENOTFOUND' || c === 'ECONNABORTED') return true;
+    const status = err.statusCode || err.response?.status;
+    if (status === 408 || status === 429) return true;
+    if (status >= 500) return true;
+    if (status === 404 || status === 401 || status === 403) return false;
+    if (status && status < 500) return false;
+    return true;
+}
+
+async function retryWithBackoff(fn, options = {}) {
+    const maxRetries = options.maxRetries ?? 3;
+    const baseDelayMs = options.baseDelayMs ?? 500;
+    const isRetryable = options.isRetryable ?? (() => true);
+    let lastError;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            return await fn();
+        } catch (e) {
+            lastError = e;
+            if (!isRetryable(e)) throw e;
+            if (attempt === maxRetries - 1) break;
+            await sleep(baseDelayMs * Math.pow(2, attempt));
+        }
+    }
+    throw lastError;
+}
+
+function isTransientTelegramApiError(err) {
+    const r = err?.response;
+    if (!r) return true;
+    const code = r.error_code;
+    return code === 500 || code === 502 || code === 503;
+}
+
+async function sendTelegramMessageWithRetry(sendFn) {
+    const maxRetries = 3;
+    let lastError;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            return await sendFn();
+        } catch (e) {
+            lastError = e;
+            const r = e.response;
+            if (r?.error_code === 429 && r.parameters?.retry_after != null && attempt < maxRetries - 1) {
+                const sec = Math.min(Math.max(Number(r.parameters.retry_after), 1), 60);
+                await sleep(sec * 1000 + 200);
+                continue;
+            }
+            if (attempt < maxRetries - 1 && isTransientTelegramApiError(e)) {
+                await sleep(500 * Math.pow(2, attempt));
+                continue;
+            }
+            throw e;
+        }
+    }
+    throw lastError;
 }
 
 function escapeHtml(text) {
@@ -413,7 +568,7 @@ function dedupeNewsBatchByFingerprint(items) {
     for (let i = 0; i < n; i++) {
         if (!winners.has(items[i])) {
             const t = (items[i].title || '').substring(0, 80);
-            console.log(`Duplicate skipped: ${t}`);
+            logDebug(`Duplicate skipped: ${t}`);
         }
     }
     return Array.from(bestInRoot.values());
@@ -426,6 +581,7 @@ function dedupeNewsBatchByFingerprint(items) {
 function ensureStateShape(state) {
     if (!Array.isArray(state.posted_ids)) state.posted_ids = [];
     if (!Array.isArray(state.posted_fingerprints)) state.posted_fingerprints = [];
+    if (typeof state.last_check !== 'string') state.last_check = '';
 }
 
 function loadState() {
@@ -436,7 +592,7 @@ function loadState() {
                   return raw;
           }
     } catch (e) {
-          console.error('Hafiza yuklenemedi:', e.message);
+          logError('Hafiza yuklenemedi:', e.message);
     }
     return { posted_ids: [], last_check: '', posted_fingerprints: [] };
 }
@@ -451,7 +607,7 @@ function saveState(state) {
           }
           fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
     } catch (e) {
-          console.error('Hafiza kaydedilemedi:', e.message);
+          logError('Hafiza kaydedilemedi:', e.message);
     }
 }
 
@@ -465,7 +621,10 @@ async function fetchCryptoPanic(state) {
           const url = CRYPTOPANIC_API_KEY
             ? `https://cryptopanic.com/api/v1/posts/?auth_token=${CRYPTOPANIC_API_KEY}&public=true&filter=important`
                   : `https://cryptopanic.com/api/v1/posts/?public=true&filter=important`;
-          const res = await axios.get(url, { timeout: 10000 });
+          const res = await retryWithBackoff(
+            () => axios.get(url, { timeout: 10000 }),
+            { maxRetries: 3, baseDelayMs: 500, isRetryable: isRetryableAxiosError }
+          );
           for (const item of (res.data.results || [])) {
                   if (state.posted_ids.includes(item.id.toString())) continue;
                   const cand = {
@@ -480,19 +639,22 @@ async function fetchCryptoPanic(state) {
                   const fps = createNewsFingerprints(cand);
                   if (postedContainsAnyFingerprint(state, fps)) {
                             const t = (item.title || '').substring(0, 80);
-                            console.log(`Duplicate skipped: ${t}`);
+                            logDebug(`Duplicate skipped: ${t}`);
                             continue;
                   }
                   items.push(cand);
           }
-    } catch (e) { console.error('[CryptoPanic] Hata:', e.message); }
+    } catch (e) { logWarn('[CryptoPanic] Hata:', e.message); }
     return items;
 }
 
 async function fetchRSS(url, sourceName, type, state) {
     const items = [];
     try {
-          const feed = await parser.parseURL(url);
+          const feed = await retryWithBackoff(
+            () => parser.parseURL(url),
+            { maxRetries: 3, baseDelayMs: 500, isRetryable: isRetryableRssFetchError }
+          );
           for (const item of (feed.items || [])) {
                   const newsId = item.guid || item.link || item.title;
                   if (state.posted_ids.includes(newsId)) continue;
@@ -509,12 +671,12 @@ async function fetchRSS(url, sourceName, type, state) {
                   const fps = createNewsFingerprints(cand);
                   if (postedContainsAnyFingerprint(state, fps)) {
                             const t = (item.title || '').substring(0, 80);
-                            console.log(`Duplicate skipped: ${t}`);
+                            logDebug(`Duplicate skipped: ${t}`);
                             continue;
                   }
                   items.push(cand);
           }
-    } catch (e) { console.error(`[${sourceName}] Hata:`, e.message); }
+    } catch (e) { logWarn(`[${sourceName}] Hata:`, e.message); }
     return items;
 }
 
@@ -529,7 +691,7 @@ async function processNews() {
     ensureStateShape(state);
     const isFirstRun = state.posted_ids.length === 0;
     const now = new Date().toLocaleTimeString('tr-TR');
-    console.log(`\n[${now}] ====== TARAMA BASLADI ======`);
+    logDebug(`\n[${now}] ====== TARAMA BASLADI ======`);
 
   // TUM KAYNAKLAR PARALEL TARANIR (Promise.allSettled)
   const [
@@ -557,26 +719,26 @@ async function processNews() {
     [cryptoPanic, coinDesk, cnbc, reuters, forexLive, fxStreet, theBlock, investing].forEach((result, i) => {
           const names = ['CryptoPanic', 'CoinDesk', 'CNBC', 'Reuters', 'ForexLive', 'FXStreet', 'The Block', 'Investing.com'];
           if (result.status === 'fulfilled') {
-                  console.log(`  OK ${names[i]}: ${result.value.length} haber`);
+                  logDebug(`  OK ${names[i]}: ${result.value.length} haber`);
                   allNews = allNews.concat(result.value);
           } else {
-                  console.log(`  ERROR ${names[i]}: BASARISIZ`);
+                  logWarn(`  Kaynak basarisiz: ${names[i]}`);
           }
     });
 
   allNews = dedupeNewsBatchByFingerprint(allNews);
 
-  console.log(`  Toplam: ${allNews.length} yeni haber bulundu`);
+  logDebug(`  Toplam: ${allNews.length} yeni haber bulundu`);
 
   // SKOR FILTRESI
   const qualified = allNews.filter(n => n.score >= MIN_SCORE);
     qualified.sort((a, b) => b.score - a.score);
 
-  console.log(`  Esigi gecen: ${qualified.length} haber (min skor: ${MIN_SCORE})`);
+  logDebug(`  Esigi gecen: ${qualified.length} haber (min skor: ${MIN_SCORE})`);
 
   // Debug: En yuksek skorlu 5 haberi goster
   qualified.slice(0, 5).forEach((n, i) => {
-        console.log(`    ${i + 1}. [${n.score}] ${n.title.substring(0, 80)}...`);
+        logDebug(`    ${i + 1}. [${n.score}] ${n.title.substring(0, 80)}...`);
   });
 
   // Elenen haberleri hafizaya ekle (tekrar taranmasin)
@@ -606,10 +768,11 @@ async function processNews() {
     });
     saveState(state);
 
+  let sentThisRound = 0;
   for (const item of toPost) {
         try {
-                console.log(`\n  PAYLASILIYOR [Skor: ${item.score}] - ${item.source}`);
-                console.log(`     "${item.title}"`);
+                logDebug(`\n  PAYLASILIYOR [Skor: ${item.score}] - ${item.source}`);
+                logDebug(`     "${item.title}"`);
 
           // Ceviri
           const translatedTitle = await translateText(item.title);
@@ -640,37 +803,65 @@ async function processNews() {
                     message += `\nLink: <a href="${escapeHtml(item.url.trim())}">Haberi aç</a>`;
           }
 
-          await bot.telegram.sendMessage(CHANNEL_ID, message, {
+          await sendTelegramMessageWithRetry(() =>
+            bot.telegram.sendMessage(CHANNEL_ID, message, {
                     parse_mode: 'HTML',
                     disable_web_page_preview: true
-          });
+            })
+          );
 
           state.posted_ids.push(item.id);
                 persistFingerprintForItem(state, item, 'posted');
                 saveState(state);
+                sentThisRound += 1;
 
           // Haberler arasi bekleme (5 saniye)
           await new Promise(r => setTimeout(r, 5000));
         } catch (e) {
-                console.error('  Mesaj atma hatasi:', e.message);
+                logError('  Mesaj atma hatasi:', e.message);
         }
   }
 
-  console.log(`[${new Date().toLocaleTimeString('tr-TR')}] ====== TARAMA BITTI ======\n`);
+  state.last_check = new Date().toISOString();
+    runtimeStats.lastScanIso = state.last_check;
+    runtimeStats.lastScanTotalNews = allNews.length;
+    runtimeStats.lastScanQualified = qualified.length;
+    runtimeStats.lastScanSent = sentThisRound;
+    runtimeStats.lastScanPostedIdsSize = state.posted_ids.length;
+    runtimeStats.lastScanFingerprintsSize = state.posted_fingerprints.length;
+    saveState(state);
+
+  logInfo(`Tur ozeti | toplam=${allNews.length} esik_ustu=${qualified.length} gonderilen=${sentThisRound} posted_ids=${state.posted_ids.length} fingerprints=${state.posted_fingerprints.length} | son=${state.last_check}`);
+  logDebug(`[${new Date().toLocaleTimeString('tr-TR')}] ====== TARAMA BITTI ======\n`);
 }
 
 // ═══════════════════════════════════════════════════════
 //  BAŞLATMA — 30 SANIYEDE BIR TARAMA
 // ═══════════════════════════════════════════════════════
 
+if (ADMIN_USER_ID !== null) {
+    bot.command('status', async (ctx) => {
+        if (ctx.from?.id !== ADMIN_USER_ID) {
+            await ctx.reply('Yetkisiz.');
+            return;
+        }
+        const s = runtimeStats;
+        const alive = s.isRunLoopActive ? 'Evet' : 'Hayir';
+        const text = [
+            `Bot: ${alive}`,
+            `Son tarama: ${s.lastScanIso || 'henuz yok'}`,
+            `Son tur toplam haber: ${s.lastScanTotalNews}`,
+            `Esik ustu: ${s.lastScanQualified}`,
+            `Gonderilen: ${s.lastScanSent}`,
+            `posted_ids: ${s.lastScanPostedIdsSize}`,
+            `posted_fingerprints: ${s.lastScanFingerprintsSize}`
+        ].join('\n');
+        await ctx.reply(text);
+    });
+}
+
 bot.telegram.getMe().then((me) => {
-    console.log(`\n+------------------------------------------+`);
-    console.log(`|    [START] MALIBU NEWS BOT v2.1 BASLATILDI      |`);
-    console.log(`|  Bot: @${me.username.padEnd(33)}|`);
-    console.log(`|  Tarama: Her 30 saniyede bir             |`);
-    console.log(`|  Kaynaklar: 8 paralel kaynak             |`);
-    console.log(`|  Filtre: Sadece kritik haberler           |`);
-    console.log(`+------------------------------------------+\n`);
+    logInfo(`[START] Malibu News Bot v2.1 | @${me.username} | tarama 30s`);
 
                             // Ilk calistirma
                             processNews();
@@ -681,5 +872,11 @@ bot.telegram.getMe().then((me) => {
                             bot.launch();
 });
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+    runtimeStats.isRunLoopActive = false;
+    bot.stop('SIGINT');
+});
+process.once('SIGTERM', () => {
+    runtimeStats.isRunLoopActive = false;
+    bot.stop('SIGTERM');
+});
